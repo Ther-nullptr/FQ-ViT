@@ -6,7 +6,6 @@ from .base import BaseQuantizer
 
 
 class UniformQuantizer(BaseQuantizer):
-
     def __init__(self, bit_type, observer, module_type):
         super(UniformQuantizer, self).__init__(bit_type, observer, module_type)
         self.scale = None

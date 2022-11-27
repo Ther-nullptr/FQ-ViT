@@ -4,7 +4,6 @@ import torch.nn as nn
 
 
 class BaseQuantizer(nn.Module):
-
     def __init__(self, bit_type, observer, module_type):
         super(BaseQuantizer, self).__init__()
         self.bit_type = bit_type

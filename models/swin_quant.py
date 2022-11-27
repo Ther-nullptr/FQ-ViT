@@ -63,7 +63,6 @@ class WindowAttention(nn.Module):
         attn_drop (float, optional): Dropout ratio of attention weight. Default: 0.0
         proj_drop (float, optional): Dropout ratio of output. Default: 0.0
     """
-
     def __init__(self,
                  dim,
                  window_size,
@@ -238,7 +237,6 @@ class SwinTransformerBlock(nn.Module):
         act_layer (nn.Module, optional): Activation layer. Default: nn.GELU
         norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
     """
-
     def __init__(self,
                  dim,
                  input_resolution,
@@ -407,7 +405,6 @@ class PatchMerging(nn.Module):
         dim (int): Number of input channels.
         norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
     """
-
     def __init__(self,
                  input_resolution,
                  dim,
@@ -494,7 +491,6 @@ class BasicLayer(nn.Module):
         downsample (nn.Module | None, optional): Downsample layer at the end of the layer. Default: None
         use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False.
     """
-
     def __init__(self,
                  dim,
                  input_resolution,
@@ -591,7 +587,6 @@ class SwinTransformer(nn.Module):
         patch_norm (bool): If True, add normalization after patch embedding. Default: True
         use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False
     """
-
     def __init__(self,
                  img_size=224,
                  patch_size=4,

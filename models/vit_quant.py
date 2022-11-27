@@ -23,7 +23,6 @@ __all__ = [
 
 
 class Attention(nn.Module):
-
     def __init__(self,
                  dim,
                  num_heads=8,
@@ -116,7 +115,6 @@ class Attention(nn.Module):
 
 
 class Block(nn.Module):
-
     def __init__(self,
                  dim,
                  num_heads,
@@ -195,7 +193,6 @@ class VisionTransformer(nn.Module):
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`  -
         https://arxiv.org/abs/2010.11929
     """
-
     def __init__(self,
                  img_size=224,
                  patch_size=16,

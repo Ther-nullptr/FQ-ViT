@@ -2,7 +2,6 @@ from models import BIT_TYPE_DICT
 
 
 class Config:
-
     def __init__(self, ptf=True, lis=True, quant_method='minmax'):
         '''
         ptf stands for Power-of-Two Factor activation quantization for Integer Layernorm.

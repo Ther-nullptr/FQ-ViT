@@ -12,7 +12,6 @@ from .ptq import QAct, QConv2d, QLinear
 
 
 def _ntuple(n):
-
     def parse(x):
         if isinstance(x, collections.abc.Iterable):
             return x
@@ -105,7 +104,6 @@ def drop_path(x, drop_prob: float = 0.0, training: bool = False):
 
 class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks)."""
-
     def __init__(self, drop_prob=None):
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
@@ -115,7 +113,6 @@ class DropPath(nn.Module):
 
 
 class Mlp(nn.Module):
-
     def __init__(self,
                  in_features,
                  hidden_features=None,
@@ -174,7 +171,6 @@ class Mlp(nn.Module):
 
 class PatchEmbed(nn.Module):
     """Image to Patch Embedding"""
-
     def __init__(self,
                  img_size=224,
                  patch_size=16,
@@ -250,7 +246,6 @@ class HybridEmbed(nn.Module):
     """CNN Feature Map Embedding
     Extract feature map from CNN, flatten, project to embedding dim.
     """
-
     def __init__(self,
                  backbone,
                  img_size=224,

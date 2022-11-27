@@ -213,7 +213,6 @@ def validate(args, val_loader, model, criterion, device):
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
-
     def __init__(self):
         self.reset()
 
@@ -251,7 +250,6 @@ def build_transform(input_size=224,
                     mean=(0.485, 0.456, 0.406),
                     std=(0.229, 0.224, 0.225),
                     crop_pct=0.875):
-
     def _pil_interp(method):
         if method == 'bicubic':
             return Image.BICUBIC

@@ -16,7 +16,6 @@ def load_weights_from_npz(model,
                           prefix=''):
     """ Load weights from .npz checkpoints for official Google Brain Flax implementation
     """
-
     def _n2p(w, t=True):
         if w.ndim == 4 and w.shape[0] == w.shape[1] == w.shape[2] == 1:
             w = w.flatten()

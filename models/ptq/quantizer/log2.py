@@ -5,7 +5,6 @@ from .base import BaseQuantizer
 
 
 class Log2Quantizer(BaseQuantizer):
-
     def __init__(self, bit_type, observer, module_type):
         super(Log2Quantizer, self).__init__(
             bit_type,
