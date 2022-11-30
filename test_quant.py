@@ -85,6 +85,7 @@ def seed(seed=0):
 
 def main():
     args = parser.parse_args()
+    wandb.init(project='FQ-ViT', name=f"{args.model}_ptf_{str(args.ptf)}_lis_{str(args.lis)}_{args.quant_method}", reinit=True, entity="ther")
     seed(args.seed)
 
     device = torch.device(args.device)
@@ -210,7 +211,6 @@ def validate(args, val_loader, model, criterion, device):
     print('* Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Time {time:.3f}'.
           format(top1=top1, top5=top5, time=val_end_time - val_start_time))
 
-    wandb.init(project='FQ-ViT', name=f"{args.model}_ptf_{str(args.ptf)}_lis_{str(args.lis)}_{args.quant_method}", reinit=True, entity="ther")
     wandb.log({"loss":losses.avg, "top1":top1.avg, "top5":top5.avg})
     return losses.avg, top1.avg, top5.avg
 
