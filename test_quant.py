@@ -12,6 +12,8 @@ from PIL import Image
 from config import Config
 from models import *
 
+import wandb
+
 parser = argparse.ArgumentParser(description='FQ-ViT')
 
 parser.add_argument('model',
@@ -147,7 +149,7 @@ def main():
             image_list.append(data)
 
         print('Calibrating...')
-        model.model_open_calibrate()
+        model.model_open_calibrate() #! begin to calib.
         with torch.no_grad():
             for i, image in enumerate(image_list):
                 if i == len(image_list) - 1:
@@ -205,9 +207,11 @@ def validate(args, val_loader, model, criterion, device):
                       top5=top5,
                   ))
     val_end_time = time.time()
-    print(' * Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Time {time:.3f}'.
+    print('* Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Time {time:.3f}'.
           format(top1=top1, top5=top5, time=val_end_time - val_start_time))
 
+    wandb.init(project='FQ-ViT', name=f"{args.model}_ptf_{str(args.ptf)}_lis_{str(args.lis)}_{args.quant_method}", reinit=True, entity="ther")
+    wandb.log({"loss":losses.avg, "top1":top1.avg, "top5":top5.avg})
     return losses.avg, top1.avg, top5.avg
 
 

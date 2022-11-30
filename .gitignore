@@ -122,3 +122,5 @@ datasets/
 *.pth
 *.py~
 *.sh~
+
+wandb/
