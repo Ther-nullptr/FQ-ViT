@@ -124,3 +124,5 @@ datasets/
 *.sh~
 
 wandb/
+*.png
+plot_sigmoid_gate.py

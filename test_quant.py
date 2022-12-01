@@ -48,6 +48,9 @@ parser.add_argument('--print-freq',
                     type=int,
                     help='print frequency')
 parser.add_argument('--seed', default=0, type=int, help='seed')
+parser.add_argument('--checkpoint', default=False, action='store_true')
+parser.add_argument('--checkpoint_path', default='a_vit_small_patch16_224.pt', type=str)
+parser.add_argument('--name', default='avit', type=str)
 
 
 def str2model(name):
@@ -85,12 +88,18 @@ def seed(seed=0):
 
 def main():
     args = parser.parse_args()
-    wandb.init(project='FQ-ViT', name=f"{args.model}_ptf_{str(args.ptf)}_lis_{str(args.lis)}_{args.quant_method}", reinit=True, entity="ther")
+    wandb.init(project='FQ-ViT', name=f"{args.name}_{args.model}_ptf_{str(args.ptf)}_lis_{str(args.lis)}_{args.quant_method}", reinit=True, entity="ther")
     seed(args.seed)
 
     device = torch.device(args.device)
     cfg = Config(args.ptf, args.lis, args.quant_method)
-    model = str2model(args.model)(pretrained=True, cfg=cfg)
+    model = str2model(args.model)(pretrained=False, cfg=cfg)
+
+    if args.checkpoint:
+        print(f'load state_dict from {args.checkpoint_path}')
+        state_dict = torch.load(args.checkpoint_path)
+        model.load_state_dict(state_dict)
+
     model = model.to(device)
 
     # Note: Different models have different strategies of data preprocessing.

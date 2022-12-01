@@ -106,8 +106,8 @@ class Attention(nn.Module):
             qkv[2],
         )  # make torchscript happy (cannot use tensor as tuple)
         attn = (q @ k.transpose(-2, -1)) * self.scale #? where to set the mask? before the quant or after the quant
+        attn = attn + mask.view(mask.shape[0], 1, 1, mask.shape[1]) * mask_softmax_bias #! [10, 3, 197, 197] + [10, 1, 1, 197]
         attn = self.qact_attn1(attn)
-        attn = attn + mask.view(mask.shape[0], 1, 1, mask.shape[1]) * self.masked_softmax_bias #! [10, 3, 197, 197] + [10, 1, 1, 197]
         attn = self.log_int_softmax(attn, self.qact_attn1.quantizer.scale)
         attn = self.attn_drop(attn)
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -200,12 +200,14 @@ class Block(nn.Module):
         bs, token, dim = x.shape
         x = self.qact2(x + self.drop_path(
             self.attn(
-                self.qact1(self.norm1(x*(1-mask).view(bs, token, 1), last_quantizer, self.qact1.quantizer)*(1-mask).view(bs, token, 1)), mask = mask)))
+                self.qact1(
+                    self.norm1(
+                        x*(1-mask).view(bs, token, 1), last_quantizer, self.qact1.quantizer)*(1-mask).view(bs, token, 1)), mask = mask)))
         x = self.qact4(x + self.drop_path(
             self.mlp(
                 self.qact3(self.norm2(x*(1-mask).view(bs, token, 1), self.qact2.quantizer,self.qact3.quantizer)*(1-mask).view(bs, token, 1)))))
 
-        halting_score_token = torch.sigmoid(x[:,:,0] * self.gate_scale - self.gate_center)
+        halting_score_token = torch.nn.functional.sigmoid(x[:,:,0] * self.gate_scale - self.gate_center)
         halting_score = [-1, halting_score_token]
 
         return x, halting_score
@@ -424,15 +426,13 @@ class VisionTransformer(nn.Module):
                 m.calibrate = False
 
     def forward_features(self, x):
-        B = x.shape[0]
-
         if self.input_quant:
             x = self.qact_input(x)
 
         x = self.patch_embed(x)
 
         cls_tokens = self.cls_token.expand(
-            B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
+            x.shape[0], -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
         x = self.qact_embed(x)
         x = x + self.qact_pos(self.pos_embed)
@@ -469,7 +469,7 @@ class VisionTransformer(nn.Module):
 
             # TODO: new forward for block
             
-            block_output, h_lst = blk.forward_act(x, last_quantizer)
+            block_output, h_lst = blk.forward_act(x, 1.- mask_token.float(), last_quantizer)
 
             self.halting_score_layer.append(torch.mean(h_lst[1][1:]))
 
@@ -526,6 +526,7 @@ class VisionTransformer(nn.Module):
         x = self.forward_features(x)
         x = self.head(x)
         x = self.act_out(x)
+        self.step += 1
         return x
 
 
