@@ -180,7 +180,7 @@ class Block(nn.Module):
                           quantizer_str=cfg.QUANTIZER_A_LN)
 
         self.gate_scale = 10
-        self.gate_center = 75
+        self.gate_center = 30
 
     def forward(self, x, last_quantizer=None):
         x = self.qact2(x + self.drop_path(
@@ -198,16 +198,22 @@ class Block(nn.Module):
     def forward_act(self, x, mask = None, last_quantizer=None):
         # TODO: add mask edition for attn.
         bs, token, dim = x.shape
-        x = self.qact2(x + self.drop_path(
-            self.attn(
-                self.qact1(
-                    self.norm1(
-                        x*(1-mask).view(bs, token, 1), last_quantizer, self.qact1.quantizer)*(1-mask).view(bs, token, 1)), mask = mask)))
-        x = self.qact4(x + self.drop_path(
-            self.mlp(
-                self.qact3(self.norm2(x*(1-mask).view(bs, token, 1), self.qact2.quantizer,self.qact3.quantizer)*(1-mask).view(bs, token, 1)))))
+        orig_x = x
 
-        halting_score_token = torch.nn.functional.sigmoid(x[:,:,0] * self.gate_scale - self.gate_center)
+        x = self.norm1(x*(1-mask).view(bs, token, 1), last_quantizer, self.qact1.quantizer)
+        x = self.qact1(x*(1-mask).view(bs, token, 1))
+        x = self.attn(x, mask = mask)
+        x = orig_x + self.drop_path(x)
+        x = self.qact2(x)
+
+        orig_x = x
+        x = self.norm2(x*(1-mask).view(bs, token, 1), self.qact2.quantizer,self.qact3.quantizer)
+        x = self.qact3(x*(1-mask).view(bs, token, 1))
+        x = self.mlp(x)
+        x = orig_x + self.drop_path(x)
+        x = self.qact4(x)
+
+        halting_score_token = torch.sigmoid(x[:,:,0] * self.gate_scale - self.gate_center)
         halting_score = [-1, halting_score_token]
 
         return x, halting_score
@@ -519,7 +525,6 @@ class VisionTransformer(nn.Module):
         x = self.norm(x, self.blocks[-1].qact4.quantizer,
                       self.qact2.quantizer)[:, 0]
         x = self.qact2(x)
-        x = self.pre_logits(x)
         return x
 
     def forward(self, x):

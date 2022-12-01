@@ -171,11 +171,11 @@ class QIntLayerNorm(nn.LayerNorm):
             x = F.layer_norm(x, self.normalized_shape, self.weight, self.bias,
                              self.eps)
         elif self.mode == 'int':
-            in_scale = in_quantizer.scale
+            in_scale = in_quantizer.scale #! 0.0539
             if in_scale_expand != 1:
                 in_scale = in_scale.unsqueeze(-1).expand(
                     -1, in_scale_expand).T.reshape(-1)
-            out_scale = out_quantizer.scale
+            out_scale = out_quantizer.scale #! 0.0805
             assert in_scale is not None and out_scale is not None
             channel_nums = x.shape[-1]
             in_scale = in_scale.reshape(1, 1, -1)
@@ -267,19 +267,19 @@ class QIntSoftmax(nn.Module):
             exp_int, exp_scaling_factor = int_polynomial(r, scaling_factor)
             exp_int = torch.clamp(torch.floor(exp_int * 2**(n - q)), min=0)
             scaling_factor = exp_scaling_factor / 2**n
-            return exp_int, scaling_factor
+            return exp_int, scaling_factor #! mean: 1.9816e+10, 4,4741e-12
 
         x_int = x / scaling_factor
         x_int_max, _ = x_int.max(dim=-1, keepdim=True)
         x_int = x_int - x_int_max
         exp_int, exp_scaling_factor = int_exp(x_int, scaling_factor)
         exp_int_sum = exp_int.sum(dim=-1, keepdim=True)
-        return exp_int, exp_int_sum
+        return exp_int, exp_int_sum #! mean: 1.9816e+10 3.9038e+12
 
     def forward(self, x, scale):
         if self.log_i_softmax and scale is not None:
             exp_int, exp_int_sum = self.int_softmax(x, scale)
-            softmax_out = torch.round(exp_int_sum / exp_int)
+            softmax_out = torch.round(exp_int_sum / exp_int) #!! NaN occurs there!
             rounds = self.log_round(softmax_out)
             mask = rounds >= 2**self.bit_type.bits
             qlog = torch.clamp(rounds, 0, 2**self.bit_type.bits - 1)
