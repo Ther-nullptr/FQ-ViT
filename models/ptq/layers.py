@@ -260,7 +260,7 @@ class QIntSoftmax(nn.Module):
         def int_exp(x_int, scaling_factor):
             x0 = -0.6931  # -ln2
             n = 30  # sufficiently large integer
-            x0_int = torch.floor(x0 / scaling_factor)
+            x0_int = torch.floor(x0 / scaling_factor) # the scaling factor is larger than 1
             x_int = torch.max(x_int, n * x0_int)
             q = torch.floor(x_int / x0_int)
             r = x_int - x0_int * q

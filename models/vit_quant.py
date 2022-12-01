@@ -198,20 +198,17 @@ class Block(nn.Module):
     def forward_act(self, x, mask = None, last_quantizer=None):
         # TODO: add mask edition for attn.
         bs, token, dim = x.shape
-        orig_x = x
 
-        x = self.norm1(x*(1-mask).view(bs, token, 1), last_quantizer, self.qact1.quantizer)
-        x = self.qact1(x*(1-mask).view(bs, token, 1))
-        x = self.attn(x, mask = mask)
-        x = orig_x + self.drop_path(x)
-        x = self.qact2(x)
-
-        orig_x = x
-        x = self.norm2(x*(1-mask).view(bs, token, 1), self.qact2.quantizer,self.qact3.quantizer)
-        x = self.qact3(x*(1-mask).view(bs, token, 1))
-        x = self.mlp(x)
-        x = orig_x + self.drop_path(x)
-        x = self.qact4(x)
+        x = self.qact2(x + 
+            self.attn(
+                self.qact1(
+                    self.norm1(x*(1-mask).view(bs, token, 1), last_quantizer, 
+                        self.qact1.quantizer)*(1-mask).view(bs, token, 1)), mask=mask)) #! every step need to load the mask!!
+        x = self.qact4(x + 
+            self.mlp(
+                self.qact3(
+                    self.norm2(x*(1-mask).view(bs, token, 1), self.qact2.quantizer,
+                            self.qact3.quantizer)*(1-mask).view(bs, token, 1))))
 
         halting_score_token = torch.sigmoid(x[:,:,0] * self.gate_scale - self.gate_center)
         halting_score = [-1, halting_score_token]
@@ -437,8 +434,7 @@ class VisionTransformer(nn.Module):
 
         x = self.patch_embed(x)
 
-        cls_tokens = self.cls_token.expand(
-            x.shape[0], -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
+        cls_tokens = self.cls_token.expand(x.shape[0], -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
         x = self.qact_embed(x)
         x = x + self.qact_pos(self.pos_embed)
@@ -522,9 +518,9 @@ class VisionTransformer(nn.Module):
             else:
                 output = output + (delta1 + delta2)
 
-        x = self.norm(x, self.blocks[-1].qact4.quantizer,
-                      self.qact2.quantizer)[:, 0]
-        x = self.qact2(x)
+        # x = self.norm(output, self.blocks[-1].qact4.quantizer,
+        #               self.qact2.quantizer)[:, 0]
+        x = self.qact2(output)[:, 0]
         return x
 
     def forward(self, x):
