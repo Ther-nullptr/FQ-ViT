@@ -106,13 +106,13 @@ class Attention(nn.Module):
             qkv[2],
         )  # make torchscript happy (cannot use tensor as tuple)
         attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = self.qact_attn1(attn)
 
         # ---- for act only ----
         if mask is not None:
             attn = attn + mask.view(mask.shape[0], 1, 1, mask.shape[1]) * mask_softmax_bias
         # ---- for act only end ----
 
-        attn = self.qact_attn1(attn)
         attn = self.log_int_softmax(attn, self.qact_attn1.quantizer.scale)
         attn = self.attn_drop(attn)
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -121,6 +121,10 @@ class Attention(nn.Module):
         x = self.qact3(x)
         x = self.proj_drop(x)
         return x
+
+        '''
+        关于此处的mask需要注意: mask给attn带来了极大的异常值，导致后一步attn量化的计算不正常，所以应该对mask和quant的位置稍作调整
+        '''
 
 
 class Block(nn.Module):
@@ -184,8 +188,10 @@ class Block(nn.Module):
                           observer_str=cfg.OBSERVER_A_LN,
                           quantizer_str=cfg.QUANTIZER_A_LN)
 
-        self.gate_scale = 10
-        self.gate_center = 30
+        self.gate_scale = cfg.gate_scale
+        self.gate_center = cfg.gate_center
+
+        print(f'gate_scale: {self.gate_scale}, gate_center: {self.gate_center}')
 
     def forward(self, x, last_quantizer=None, mask=None):
         bs, token, dim = x.shape

@@ -3,6 +3,8 @@ import math
 import os
 import time
 
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torchvision.datasets as datasets
@@ -47,7 +49,9 @@ parser.add_argument('--print-freq',
                     default=100,
                     type=int,
                     help='print frequency')
-parser.add_argument('--seed', default=0, type=int, help='seed')
+parser.add_argument('--checkpoint_path', default='/root/kyzhang/yjwang/PTQ4ViT/original/a_vit_small_patch16_224.pth', type=str)
+parser.add_argument('--use_checkpoint', default=False, action='store_true')
+parser.add_argument('--seed', default=0, type=int)
 
 
 def str2model(name):
@@ -87,10 +91,19 @@ def main():
     args = parser.parse_args()
     seed(args.seed)
 
+    if 'small' in args.model:
+        gate_scale = 10
+        gate_center = 75
+    elif 'tiny' in args.model:
+        gate_scale = 10
+        gate_center = 30
+
     device = torch.device(args.device)
-    cfg = Config(args.ptf, args.lis, args.quant_method)
+    cfg = Config(args.ptf, args.lis, args.quant_method, gate_scale, gate_center)
     model = str2model(args.model)(pretrained=True, cfg=cfg)
-    model.load_state_dict(torch.load('/root/kyzhang/yjwang/PTQ4ViT/original/a_vit_small_patch16_224.pth'))
+    if args.use_checkpoint:
+        model.load_state_dict(torch.load(args.checkpoint_path))
+        print('load checkpoint from %s' % args.checkpoint_path)
     model = model.to(device)
 
     wandb.init(project='FQ-ViT-new', name=f"avit_{args.model}_ptf_{str(args.ptf)}_lis_{str(args.lis)}_{args.quant_method}", reinit=True, entity="ther")
@@ -176,6 +189,8 @@ def validate(args, val_loader, model, criterion, device):
 
     # switch to evaluate mode
     model.eval()
+    cnt_token = None
+    cnt_token_diff = None
 
     val_start_time = end = time.time()
     for i, (data, target) in enumerate(val_loader):
@@ -196,6 +211,18 @@ def validate(args, val_loader, model, criterion, device):
         batch_time.update(time.time() - end)
         end = time.time()
 
+        # measure token
+        if cnt_token is None:
+            cnt_token = model.counter_token.data.cpu().numpy() #! [128, 197]
+        else:
+            cnt_token = np.concatenate((cnt_token, model.counter_token.data.cpu().numpy())) #! [128 * n, 197]
+
+        if cnt_token_diff is None:
+            cnt_token_diff = (torch.max(model.counter_token, dim=-1)[0]-torch.min(model.counter_token, dim=-1)[0]).data.cpu().numpy() #! [128]
+        else:
+            cnt_token_diff = np.concatenate((cnt_token_diff, \
+            (torch.max(model.counter_token, dim=-1)[0]-torch.min(model.counter_token, dim=-1)[0]).data.cpu().numpy())) #! [128 * n]
+
         if i % args.print_freq == 0:
             print('Test: [{0}/{1}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
@@ -209,11 +236,20 @@ def validate(args, val_loader, model, criterion, device):
                       top1=top1,
                       top5=top5,
                   ))
+
+    cnt_token_mean = float(np.mean(cnt_token))
+    cnt_token_max = float(np.max(cnt_token))
+    cnt_token_min = float(np.min(cnt_token))
+    avg_cnt_token_diff = float(np.mean(cnt_token_diff))
+    expected_depth_ratio = float(np.mean(cnt_token/12))
     val_end_time = time.time()
+
     print('* Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Time {time:.3f}'.
           format(top1=top1, top5=top5, time=val_end_time - val_start_time))
-
+    print(f'cnt_token_mean:{cnt_token_mean} cnt_token_max:{cnt_token_max} cnt_token_min:{cnt_token_min} avg_cnt_token_diff:{avg_cnt_token_diff} expected_depth_ratio:{expected_depth_ratio}')
     wandb.log({"loss":losses.avg, "top1":top1.avg, "top5":top5.avg})
+    wandb.log({"cnt_token_mean":cnt_token_mean, "cnt_token_max":cnt_token_max, "cnt_token_min":cnt_token_min, "avg_cnt_token_diff":avg_cnt_token_diff, "expected_depth_ratio":expected_depth_ratio})
+
     return losses.avg, top1.avg, top5.avg
 
 

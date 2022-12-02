@@ -2,7 +2,7 @@ from models import BIT_TYPE_DICT
 
 
 class Config:
-    def __init__(self, ptf=True, lis=True, quant_method='minmax'):
+    def __init__(self, ptf=True, lis=True, quant_method='minmax', gate_scale=10, gate_center=75):
         '''
         ptf stands for Power-of-Two Factor activation quantization for Integer Layernorm.
         lis stands for Log-Int-Softmax.
@@ -40,3 +40,6 @@ class Config:
             self.INT_NORM = False
             self.OBSERVER_A_LN = self.OBSERVER_A
             self.CALIBRATION_MODE_A_LN = self.CALIBRATION_MODE_A
+
+        self.gate_scale = gate_scale
+        self.gate_center = gate_center
