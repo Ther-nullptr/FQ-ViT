@@ -11,10 +11,13 @@ from itertools import repeat
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.autograd import Variable
 
 from .layers_quant import DropPath, HybridEmbed, Mlp, PatchEmbed, trunc_normal_
 from .ptq import QAct, QConv2d, QIntLayerNorm, QIntSoftmax, QLinear
 from .utils import load_weights_from_npz
+
+import wandb
 
 __all__ = [
     'deit_tiny_patch16_224', 'deit_small_patch16_224', 'deit_base_patch16_224',
@@ -91,7 +94,7 @@ class Attention(nn.Module):
             observer_str=cfg.OBSERVER_S,
             quantizer_str=cfg.QUANTIZER_S)
 
-    def forward(self, x):
+    def forward(self, x, mask = None, mask_softmax_bias = -1000.):
         B, N, C = x.shape
         x = self.qkv(x)
         x = self.qact1(x)
@@ -103,6 +106,12 @@ class Attention(nn.Module):
             qkv[2],
         )  # make torchscript happy (cannot use tensor as tuple)
         attn = (q @ k.transpose(-2, -1)) * self.scale
+
+        # ---- for act only ----
+        if mask is not None:
+            attn = attn + mask.view(mask.shape[0], 1, 1, mask.shape[1]) * mask_softmax_bias
+        # ---- for act only end ----
+
         attn = self.qact_attn1(attn)
         attn = self.log_int_softmax(attn, self.qact_attn1.quantizer.scale)
         attn = self.attn_drop(attn)
@@ -175,17 +184,26 @@ class Block(nn.Module):
                           observer_str=cfg.OBSERVER_A_LN,
                           quantizer_str=cfg.QUANTIZER_A_LN)
 
-    def forward(self, x, last_quantizer=None):
+        self.gate_scale = 10
+        self.gate_center = 30
+
+    def forward(self, x, last_quantizer=None, mask=None):
+        bs, token, dim = x.shape
+
         x = self.qact2(x + self.drop_path(
             self.attn(
-                self.qact1(self.norm1(x, last_quantizer,
-                                      self.qact1.quantizer)))))
+                self.qact1(self.norm1(x*(1-mask).view(bs, token, 1), last_quantizer,
+                                      self.qact1.quantizer)*(1-mask).view(bs, token, 1)), mask = mask)))
         x = self.qact4(x + self.drop_path(
             self.mlp(
                 self.qact3(
-                    self.norm2(x, self.qact2.quantizer,
-                               self.qact3.quantizer)))))
-        return x
+                    self.norm2(x*(1-mask).view(bs, token, 1), self.qact2.quantizer,
+                               self.qact3.quantizer)*(1-mask).view(bs, token, 1)))))
+
+        halting_score_token = torch.sigmoid(self.gate_scale * x[:,:,0] - self.gate_center)
+        halting_score = [-1, halting_score_token]
+
+        return x, halting_score
 
 
 class VisionTransformer(nn.Module):
@@ -327,6 +345,31 @@ class VisionTransformer(nn.Module):
         trunc_normal_(self.cls_token, std=0.02)
         self.apply(self._init_weights)
 
+        # special for quantization
+        self.gate_scale = 10
+        self.gate_center = 75
+        num_patches = self.patch_embed.num_patches
+
+        print('\nNow this is an ACT DeiT.\n')
+        self.eps = 0.01
+        print(f'Setting eps as {self.eps}.')
+
+        print('Now setting up the rho.')
+        self.rho = None  # Ponder cost
+        self.counter = None  # Keeps track of how many layers are used for each example (for logging)
+        self.batch_cnt = 0 # amount of batches seen, mainly for tensorboard
+
+        # for token act part
+        self.c_token = None
+        self.R_token = None
+        self.mask_token = None
+        self.rho_token = None
+        self.counter_token = None
+        self.num_tokens = 1
+        self.total_token_cnt = num_patches + self.num_tokens
+
+        self.step = 0
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=0.02)
@@ -376,16 +419,43 @@ class VisionTransformer(nn.Module):
             if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax]:
                 m.calibrate = False
 
+    # def forward_features(self, x):
+    #     B = x.shape[0]
+
+    #     if self.input_quant:
+    #         x = self.qact_input(x)
+
+    #     x = self.patch_embed(x)
+
+    #     cls_tokens = self.cls_token.expand(
+    #         B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
+    #     x = torch.cat((cls_tokens, x), dim=1)
+    #     x = self.qact_embed(x)
+    #     x = x + self.qact_pos(self.pos_embed)
+    #     x = self.qact1(x)
+
+    #     x = self.pos_drop(x)
+
+    #     for i, blk in enumerate(self.blocks):
+    #         last_quantizer = self.qact1.quantizer if i == 0 else self.blocks[i - 1].qact4.quantizer
+    #         x = blk(x, last_quantizer)
+
+    #     x = self.norm(x, self.blocks[-1].qact4.quantizer,
+    #                   self.qact2.quantizer)[:, 0]
+    #     x = self.qact2(x)
+    #     x = self.pre_logits(x)
+    #     return x
+
     def forward_features(self, x):
         B = x.shape[0]
+        bs = B
 
         if self.input_quant:
             x = self.qact_input(x)
 
         x = self.patch_embed(x)
 
-        cls_tokens = self.cls_token.expand(
-            B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
+        cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
         x = self.qact_embed(x)
         x = x + self.qact_pos(self.pos_embed)
@@ -393,21 +463,91 @@ class VisionTransformer(nn.Module):
 
         x = self.pos_drop(x)
 
-        for i, blk in enumerate(self.blocks):
-            last_quantizer = self.qact1.quantizer if i == 0 else self.blocks[
-                i - 1].qact4.quantizer
-            x = blk(x, last_quantizer)
+        # ---- for act only ----
+        if self.c_token is None or B != self.c_token.size()[0]:
+            self.c_token = Variable(torch.zeros(B, self.total_token_cnt).cuda())
+            self.R_token = Variable(torch.ones(B, self.total_token_cnt).cuda())
+            self.mask_token = Variable(torch.ones(B, self.total_token_cnt).cuda())
+            self.rho_token = Variable(torch.zeros(B, self.total_token_cnt).cuda())
+            self.counter_token = Variable(torch.ones(B, self.total_token_cnt).cuda())
+        
+        c_token = self.c_token.clone() #! [10, 197] {line 2}
+        R_token = self.R_token.clone() #! [10, 197] Remainder value {line 3}
+        mask_token = self.mask_token.clone() #! [10, 197] Token mask {line 6}
+        self.rho_token = self.rho_token.detach() * 0. #! Token ponder loss vector {line 5}
+        self.counter_token = self.counter_token.detach() * 0 + 1. #! [10, 197]
+        # Will contain the output of this residual layer (weighted sum of outputs of the residual blocks)
+        output = None
+        # Use out to backbone
+        out = x
+        self.halting_score_layer = []
+        # ---- for act only end----
 
-        x = self.norm(x, self.blocks[-1].qact4.quantizer,
-                      self.qact2.quantizer)[:, 0]
+        for i, blk in enumerate(self.blocks):
+            last_quantizer = self.qact1.quantizer if i == 0 else self.blocks[i - 1].qact4.quantizer
+            # ---- for act only ----
+            out.data = out.data * mask_token.float().view(B, self.total_token_cnt, 1) #! [10, 197, 192] * [10, 197, 1] {line 8}
+            
+            # ---- for act only end ----
+            block_output, h_lst = blk(out, last_quantizer, 1.- mask_token.float())
+
+            # ---- for act only ----
+            self.halting_score_layer.append(torch.mean(h_lst[1][1:]))
+            out = block_output.clone()
+            _, h_token = h_lst
+            block_output = block_output * mask_token.float().view(B, self.total_token_cnt, 1) #! [10, 197] -> [10, 197, 1]
+
+            if i == len(self.blocks) - 1:
+                h_token = Variable(torch.ones(bs, self.total_token_cnt).cuda()) 
+
+            c_token = c_token + h_token #! {line 14}
+            self.rho_token = self.rho_token + mask_token.float() #! {line 15}
+
+            # case 1
+            reached_token = c_token > 1 - self.eps #! {line 17} #! [10, 197]
+            if self.step % 10 == 0:
+                print(f'avg_val_{i}', torch.mean(c_token).item())
+                wandb.log({f'avg_val_{i}': torch.mean(c_token).item()})
+                print(f"reached_token_ratio_{i}", torch.mean(reached_token.float()).item())
+                wandb.log({f"reached_token_ratio_{i}": torch.mean(reached_token.float()).item()})
+            reached_token = reached_token.float() * mask_token.float() #! 抽取出本轮达到目标值的token，同时还要忽略掉之前被mask掉的token
+            delta1 = block_output * R_token.view(bs, self.total_token_cnt, 1) * reached_token.view(bs, self.total_token_cnt, 1) #! {line 26}
+            self.rho_token = self.rho_token + R_token * reached_token #! {line 20}
+
+            # case 2
+            not_reached_token = c_token < 1 - self.eps
+            not_reached_token = not_reached_token.float() #! the masked token is directy included in the range
+            R_token = R_token - (not_reached_token.float() * h_token) #! {line 18}
+            delta2 = block_output * h_token.view(bs, self.total_token_cnt, 1) * not_reached_token.view(bs, self.total_token_cnt, 1) #! {line 24}
+
+            self.counter_token = self.counter_token + not_reached_token # These data points will need at least one more layer
+
+            # Update the mask
+            mask_token = c_token < 1 - self.eps #! {line 28}
+
+            if output is None:
+                output = delta1 + delta2
+            else:
+                output = output + (delta1 + delta2)
+
+            # ---- for act only end ----
+
+        x = self.norm(output, self.blocks[-1].qact4.quantizer, self.qact2.quantizer)[:, 0]
         x = self.qact2(x)
         x = self.pre_logits(x)
         return x
+
+    # def forward(self, x):
+    #     x = self.forward_features(x)
+    #     x = self.head(x)
+    #     x = self.act_out(x)
+    #     return x
 
     def forward(self, x):
         x = self.forward_features(x)
         x = self.head(x)
         x = self.act_out(x)
+        self.step += 1
         return x
 
 
