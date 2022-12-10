@@ -86,7 +86,7 @@ class Attention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj_drop = nn.Dropout(proj_drop)
         self.log_int_softmax = QIntSoftmax(
-            log_i_softmax=cfg.INT_SOFTMAX,
+            log_int_softmax=cfg.INT_SOFTMAX,
             quant=quant,
             calibrate=calibrate,
             bit_type=cfg.BIT_TYPE_S,

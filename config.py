@@ -29,7 +29,7 @@ class Config:
             self.QUANTIZER_S = 'log2'
         else:
             self.INT_SOFTMAX = False
-            self.BIT_TYPE_S = BIT_TYPE_DICT['uint8']
+            self.BIT_TYPE_S = BIT_TYPE_DICT['int8']
             self.OBSERVER_S = self.OBSERVER_A
             self.QUANTIZER_S = self.QUANTIZER_A
         if ptf:

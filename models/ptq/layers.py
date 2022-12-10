@@ -209,7 +209,7 @@ class QIntLayerNorm(nn.LayerNorm):
 class QIntSoftmax(nn.Module):
 
     def __init__(self,
-                 log_i_softmax=False,
+                 log_int_softmax=False,
                  quant=False,
                  calibrate=False,
                  last_calibrate=False,
@@ -219,7 +219,7 @@ class QIntSoftmax(nn.Module):
                  quantizer_str='uniform'):
         super(QIntSoftmax, self).__init__()
 
-        self.log_i_softmax = log_i_softmax
+        self.log_int_softmax = log_int_softmax
         self.quant = quant
         self.calibrate = calibrate
         self.last_calibrate = last_calibrate
@@ -277,7 +277,7 @@ class QIntSoftmax(nn.Module):
         return exp_int, exp_int_sum
 
     def forward(self, x, scale):
-        if self.log_i_softmax and scale is not None:
+        if self.log_int_softmax and scale is not None:
             exp_int, exp_int_sum = self.int_softmax(x, scale)
             softmax_out = torch.round(exp_int_sum / exp_int)
             rounds = self.log_round(softmax_out)
@@ -288,6 +288,317 @@ class QIntSoftmax(nn.Module):
             return deq_softmax
         else:
             x = x.softmax(dim=-1)
+            if self.calibrate:
+                self.quantizer.observer.update(x)
+                if self.last_calibrate:
+                    self.quantizer.update_quantization_params(x)
+            if not self.quant:
+                return x
+            x = self.quantizer(x)
+            return x
+
+class QIntSoftmaxUniform(nn.Module):
+    def __init__(self,
+                 log_int_softmax=False,
+                 quant=False,
+                 calibrate=False,
+                 last_calibrate=False,
+                 bit_type=BIT_TYPE_DICT['int8'],
+                 calibration_mode='layer_wise',
+                 observer_str='minmax',
+                 quantizer_str='uniform'):
+        super(QIntSoftmaxUniform, self).__init__()
+
+        self.log_int_softmax = log_int_softmax
+        self.quant = quant
+        self.calibrate = calibrate
+        self.last_calibrate = last_calibrate
+        self.bit_type = bit_type
+        self.calibration_mode = calibration_mode
+        self.observer_str = observer_str
+        self.quantizer_str = quantizer_str
+
+        self.module_type = 'activation'
+        self.observer = build_observer(self.observer_str, self.module_type,
+                                       self.bit_type, self.calibration_mode)
+        self.quantizer = build_quantizer(self.quantizer_str, self.bit_type,
+                                         self.observer, self.module_type)
+
+    @staticmethod
+    def log_round(x):
+        x_log_floor = x.log2().floor()
+        big = x_log_floor
+        extra_mask = (x - 2**big) >= 2**(big - 1)
+        big[extra_mask] = big[extra_mask] + 1
+        return big
+
+    @staticmethod
+    def int_softmax(x, scaling_factor):
+        M = 25
+
+        def int_polynomial(x_int, scaling_factor):
+            coef = [0.35815147, 0.96963238, 1.]  # ax**2 + bx + c
+            coef[1] /= coef[0]
+            coef[2] /= coef[0]
+            b_int = torch.floor(coef[1] / scaling_factor)
+            c_int = torch.floor(coef[2] / scaling_factor**2)
+            z = x_int + b_int
+            z = x_int * z
+            z = z + c_int
+            scaling_factor = coef[0] * scaling_factor**2
+            return z, scaling_factor
+
+        def int_exp(x_int, scaling_factor):
+            x0 = -0.6931  # -ln2
+            n = 30  # sufficiently large integer
+            x0_int = torch.floor(x0 / scaling_factor)
+            x_int = torch.max(x_int, n * x0_int)
+            q = torch.floor(x_int / x0_int)
+            r = x_int - x0_int * q
+            exp_int, exp_scaling_factor = int_polynomial(r, scaling_factor)
+            exp_int = torch.clamp(torch.floor(exp_int * 2**(n - q)), min=0)
+            scaling_factor = exp_scaling_factor / 2**n
+            return exp_int, scaling_factor
+
+        x_int = x / scaling_factor
+        x_int_max, _ = x_int.max(dim=-1, keepdim=True)
+        x_int = x_int - x_int_max
+        exp_int, exp_scaling_factor = int_exp(x_int, scaling_factor)
+        exp_int_sum = exp_int.sum(dim=-1, keepdim=True)
+        x_out = torch.round(exp_int * (2 ** M) / exp_int_sum)
+        x_out = x_out / (2 ** M)
+        return x_out, exp_scaling_factor
+
+    def forward(self, x, scale):
+        if self.log_int_softmax and scale is not None:
+            x, scale = self.int_softmax(x, scale)
+            return x
+        else:
+            x = x.softmax(dim=-1)
+            if self.calibrate:
+                self.quantizer.observer.update(x)
+                if self.last_calibrate:
+                    self.quantizer.update_quantization_params(x)
+            if not self.quant:
+                return x
+            x = self.quantizer(x)
+            return x
+
+
+class QIntGELU(nn.Module):
+    def __init__(self,
+                i_gelu=False,
+                quant=False,
+                calibrate=False,
+                last_calibrate=False,
+                bit_type=BIT_TYPE_DICT['int8'],
+                calibration_mode='layer_wise',
+                observer_str='minmax',
+                quantizer_str='uniform'):
+        super(QIntGELU, self).__init__()
+
+        self.i_gelu = i_gelu
+        self.quant = quant
+        self.calibrate = calibrate
+        self.last_calibrate = last_calibrate
+        self.bit_type = bit_type
+        self.calibration_mode = calibration_mode
+        self.observer_str = observer_str
+        self.quantizer_str = quantizer_str
+
+        self.module_type = 'activation'
+        self.observer = build_observer(self.observer_str, self.module_type,
+                                        self.bit_type, self.calibration_mode)
+        self.quantizer = build_quantizer(self.quantizer_str, self.bit_type,
+                                            self.observer, self.module_type)
+
+    @staticmethod
+    def log_round(x):
+        x_log_floor = x.log2().floor()
+        big = x_log_floor
+        extra_mask = (x - 2**big) >= 2**(big - 1)
+        big[extra_mask] = big[extra_mask] + 1
+        return big
+
+    @staticmethod
+    def int_gelu(x, scaling_factor):
+        
+        coef = [-0.2888, -1.769, 1.] # a(x+b)**2 + c
+        sqrt2 = 1.41421356
+
+        def int_polynomial(x_int, scaling_factor):
+            b_int = torch.floor(coef[1] / scaling_factor)
+            c_int = torch.floor(coef[2] / (coef[0] * scaling_factor**2))
+            z = (x_int + b_int) ** 2 + c_int
+            scaling_factor = coef[0] * scaling_factor ** 2
+            return z, scaling_factor
+
+        def int_erf(x_int, scaling_factor):
+            x_int_sgn = torch.sign(x_int)
+            x_int = torch.clip(torch.abs(x_int), max = -coef[1] / scaling_factor)
+            x_int, scaling_factor = int_polynomial(x_int, scaling_factor)
+            x_int = x_int_sgn * x_int
+            return x_int, scaling_factor
+
+        x_int = x / scaling_factor
+        x_erf, scaling_factor_erf = int_erf(x_int, scaling_factor / sqrt2)
+        x_int_1 = torch.floor(1. / scaling_factor_erf)
+        x_int = x_int * (x_erf + x_int_1)
+        scaling_factor = scaling_factor_erf * scaling_factor / 2
+        return x_int, scaling_factor
+
+    def forward(self, x, scale):
+        if self.i_gelu and scale is not None:
+            x_int, scale = self.int_gelu(x, scale)
+            return x_int * scale
+        else:
+            x = F.gelu(x)
+            if self.calibrate:
+                self.quantizer.observer.update(x)
+                if self.last_calibrate:
+                    self.quantizer.update_quantization_params(x)
+            if not self.quant:
+                return x
+            x = self.quantizer(x)
+            return x
+
+
+class QIntSoftmaxShift(nn.Module):
+    def __init__(self,
+                log_int_softmax=False,
+                quant=False,
+                calibrate=False,
+                last_calibrate=False,
+                bit_type=BIT_TYPE_DICT['int8'],
+                calibration_mode='layer_wise',
+                observer_str='minmax',
+                quantizer_str='uniform'):
+        super(QIntSoftmaxShift, self).__init__()
+
+        self.log_int_softmax = log_int_softmax
+        self.quant = quant
+        self.calibrate = calibrate
+        self.last_calibrate = last_calibrate
+        self.bit_type = bit_type
+        self.calibration_mode = calibration_mode
+        self.observer_str = observer_str
+        self.quantizer_str = quantizer_str
+
+        self.module_type = 'activation'
+        self.observer = build_observer(self.observer_str, self.module_type,
+                                        self.bit_type, self.calibration_mode)
+        self.quantizer = build_quantizer(self.quantizer_str, self.bit_type,
+                                            self.observer, self.module_type)
+        self.bit = self.bit_type.bits
+        
+
+    @staticmethod
+    def shiftmax(x, scaling_factor, bit):
+        M = 30
+        N = 20
+
+        def intdiv(x_int, y_int):
+            x_out = torch.floor((2 ** M) /  y_int) * x_int * 2 ** (-M + (bit - 1))
+            s_out = 2 ** (-(bit - 1))
+            return x_out, s_out
+
+        def shiftexp(x_int, scaling_factor):
+            Ip = x_int + x_int * 0.5 - x_int * 0.0625
+            I0 = torch.round(1 / scaling_factor)
+            q = torch.floor(Ip / -I0)
+            r = -(Ip + q * I0)
+            Ib = ((-r) * 0.5) + I0
+            Iexp = Ib * 2 ** (N - q)
+            Sexp = scaling_factor * (2 ** (-N))
+            return Iexp, Sexp           
+
+        I = x / scaling_factor
+        I_delta = I - torch.max(I)
+        Iexp, Sexp = shiftexp(I_delta, scaling_factor)
+        Iout, Sout = intdiv(Iexp, torch.sum(Iexp))
+        return Iout, Sout
+
+    def forward(self, x, scale):
+        if self.log_int_softmax and scale is not None:
+            x_int, scale = self.shiftmax(x, scale, self.bit)
+            return x_int * scale
+        else:
+            x = F.softmax(x, dim=-1)
+            if self.calibrate:
+                self.quantizer.observer.update(x)
+                if self.last_calibrate:
+                    self.quantizer.update_quantization_params(x)
+            if not self.quant:
+                return x
+            x = self.quantizer(x)
+            return x
+
+
+class QIntGELUShift(nn.Module):
+    def __init__(self,
+            i_gelu=False,
+            quant=False,
+            calibrate=False,
+            last_calibrate=False,
+            bit_type=BIT_TYPE_DICT['int8'],
+            calibration_mode='layer_wise',
+            observer_str='minmax',
+            quantizer_str='uniform'):
+        super(QIntGELUShift, self).__init__()
+
+        self.i_gelu = i_gelu
+        self.quant = quant
+        self.calibrate = calibrate
+        self.last_calibrate = last_calibrate
+        self.bit_type = bit_type
+        self.calibration_mode = calibration_mode
+        self.observer_str = observer_str
+        self.quantizer_str = quantizer_str
+
+        self.module_type = 'activation'
+        self.observer = build_observer(self.observer_str, self.module_type,
+                                        self.bit_type, self.calibration_mode)
+        self.quantizer = build_quantizer(self.quantizer_str, self.bit_type,
+                                            self.observer, self.module_type)
+
+        self.bit = self.bit_type.bits
+
+    @staticmethod
+    def shiftgelu(x, scaling_factor, bit):
+        M = 30
+        N = 20
+
+        def intdiv(x_int, y_int):
+            x_out = torch.floor((2 ** M) /  y_int) * x_int * 2 ** (-M + (bit - 1))
+            s_out = 2 ** (-(bit - 1))
+            return x_out, s_out
+
+        def shiftexp(x_int, scaling_factor):
+            Ip = x_int + x_int * 0.5 - x_int * 0.0625
+            I0 = torch.round(1 / scaling_factor)
+            q = torch.floor(Ip / -I0)
+            r = -(Ip + q * I0)
+            Ib = ((-r) * 0.5) + I0
+            Iexp = Ib * 2 ** (N - q)
+            Sexp = scaling_factor * (2 ** - N)
+            return Iexp, Sexp
+
+        I = x / scaling_factor
+        S = scaling_factor
+        Ip = I + I * 0.5 + I * 0.125 + I * 0.0625
+        I_delta = Ip - torch.max(Ip)
+        Iexp, Sexp = shiftexp(I_delta, S)
+        Iexp_1, Sexp_1 = shiftexp(-torch.max(Ip), S)
+        Idiv, Sdiv = intdiv(Iexp, Iexp + Iexp_1)
+        Iout, Sout = Idiv * I, S * Sdiv
+        return Iout, Sout
+
+    def forward(self, x, scale):
+        if self.i_gelu and scale is not None:
+            x_int, scale = self.shiftgelu(x, scale, self.bit)
+            return x_int * scale
+        else:
+            x = F.gelu(x)
             if self.calibrate:
                 self.quantizer.observer.update(x)
                 if self.last_calibrate:
