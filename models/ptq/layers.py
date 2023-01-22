@@ -168,8 +168,7 @@ class QIntLayerNorm(nn.LayerNorm):
                 out_quantizer=None,
                 in_scale_expand=1):
         if self.mode == 'ln':
-            x = F.layer_norm(x, self.normalized_shape, self.weight, self.bias,
-                             self.eps)
+            x = F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
         elif self.mode == 'int':
             in_scale = in_quantizer.scale
             if in_scale_expand != 1:
@@ -188,7 +187,7 @@ class QIntLayerNorm(nn.LayerNorm):
 
             mean_x_q = x_q.mean(dim=-1) * in_scale1
             std_x_q = (in_scale1 / channel_nums) * torch.sqrt(
-                channel_nums * (x_q**2).sum(dim=-1) - x_q.sum(dim=-1)**2)
+                channel_nums * (x_q**2).sum(dim=-1) - x_q.sum(dim=-1)**2) + self.eps
 
             A = (in_scale1 / std_x_q).unsqueeze(-1) * \
                 self.weight.reshape(1, 1, -1) / out_scale
@@ -296,6 +295,7 @@ class QIntSoftmax(nn.Module):
                 return x
             x = self.quantizer(x)
             return x
+
 
 class QIntSoftmaxUniform(nn.Module):
     def __init__(self,
