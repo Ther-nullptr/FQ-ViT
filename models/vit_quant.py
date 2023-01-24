@@ -3,6 +3,7 @@ import collections.abc
 import math
 import os
 import re
+import sys
 import warnings
 from collections import OrderedDict
 from functools import partial
@@ -14,7 +15,7 @@ from torch import nn
 from torch.autograd import Variable
 
 from .layers_quant import DropPath, HybridEmbed, Mlp, PatchEmbed, trunc_normal_
-from .ptq import QAct, QConv2d, QIntLayerNorm, QIntSoftmax, QLinear
+from .ptq import QAct, QConv2d, QIntLayerNorm, QIntSoftmax, QLinear, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift, QIntSoftmaxIntBase
 from .utils import load_weights_from_npz
 
 import wandb
@@ -85,17 +86,20 @@ class Attention(nn.Module):
                                quantizer_str=cfg.QUANTIZER_A)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj_drop = nn.Dropout(proj_drop)
-        self.log_int_softmax = QIntSoftmax(
+        self.log_int_softmax = getattr(sys.modules[__name__], cfg.softmax_type)(
             log_int_softmax=cfg.INT_SOFTMAX,
             quant=quant,
             calibrate=calibrate,
             bit_type=cfg.BIT_TYPE_S,
             calibration_mode=cfg.CALIBRATION_MODE_S,
             observer_str=cfg.OBSERVER_S,
-            quantizer_str=cfg.QUANTIZER_S)
+            quantizer_str=cfg.QUANTIZER_S
+        )
+        print(f'softmax_type: {cfg.softmax_type}')
 
     def forward(self, x, mask = None, mask_softmax_bias = -1000.):
         B, N, C = x.shape
+        # import ipdb; ipdb.set_trace()
         x = self.qkv(x)
         x = self.qact1(x)
         qkv = x.reshape(B, N, 3, self.num_heads,
@@ -112,7 +116,6 @@ class Attention(nn.Module):
         if mask is not None:
             attn = attn + mask.view(mask.shape[0], 1, 1, mask.shape[1]) * mask_softmax_bias
         # ---- for act only end ----
-
         attn = self.log_int_softmax(attn, self.qact_attn1.quantizer.scale)
         attn = self.attn_drop(attn)
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
@@ -399,7 +402,7 @@ class VisionTransformer(nn.Module):
 
     def model_quant(self):
         for m in self.modules():
-            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax]:
+            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift]:
                 m.quant = True
             if self.cfg.INT_NORM:
                 if type(m) in [QIntLayerNorm]:
@@ -407,22 +410,22 @@ class VisionTransformer(nn.Module):
 
     def model_dequant(self):
         for m in self.modules():
-            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax]:
+            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift]:
                 m.quant = False
 
     def model_open_calibrate(self):
         for m in self.modules():
-            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax]:
+            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift]:
                 m.calibrate = True
 
     def model_open_last_calibrate(self):
         for m in self.modules():
-            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax]:
+            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift]:
                 m.last_calibrate = True
 
     def model_close_calibrate(self):
         for m in self.modules():
-            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax]:
+            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift]:
                 m.calibrate = False
 
     # def forward_features(self, x):

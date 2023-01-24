@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .ptq import QAct, QConv2d, QLinear
+from .ptq import QAct, QConv2d, QLinear, QIntGELU, QIntGELUShift
 
 
 def _ntuple(n):

@@ -142,6 +142,7 @@ def main():
     )
     # switch to evaluate mode
     model.eval()
+    print(model)
 
     # define loss function (criterion)
     criterion = nn.CrossEntropyLoss().to(device)

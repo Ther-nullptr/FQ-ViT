@@ -43,3 +43,7 @@ class Config:
 
         self.gate_scale = gate_scale
         self.gate_center = gate_center
+
+        self.softmax_type = 'QIntSoftmax'
+        self.softmax_base = 2
+        # self.gelu_type = 'QIntGELUShift'

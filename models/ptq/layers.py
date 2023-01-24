@@ -9,7 +9,6 @@ from .quantizer import build_quantizer
 
 
 class QConv2d(nn.Conv2d):
-
     def __init__(self,
                  in_channels,
                  out_channels,
@@ -296,6 +295,78 @@ class QIntSoftmax(nn.Module):
             x = self.quantizer(x)
             return x
 
+class QIntSoftmaxIntBase(nn.Module):
+
+    def __init__(self,
+                 log_int_softmax=False,
+                 quant=False,
+                 calibrate=False,
+                 last_calibrate=False,
+                 bit_type=BIT_TYPE_DICT['int8'],
+                 calibration_mode='layer_wise',
+                 observer_str='minmax',
+                 quantizer_str='uniform',
+                 softmax_base=2):
+        super(QIntSoftmaxIntBase, self).__init__()
+
+        self.log_int_softmax = log_int_softmax
+        self.quant = quant
+        self.calibrate = calibrate
+        self.last_calibrate = last_calibrate
+        self.bit_type = bit_type
+        self.calibration_mode = calibration_mode
+        self.observer_str = observer_str
+        self.quantizer_str = quantizer_str
+
+        self.module_type = 'activation'
+        self.observer = build_observer(self.observer_str, self.module_type,
+                                       self.bit_type, self.calibration_mode)
+        self.quantizer = build_quantizer(self.quantizer_str, self.bit_type,
+                                         self.observer, self.module_type)
+        self.base = softmax_base
+        print(f'base: {self.base}')
+
+    @staticmethod
+    def log_round(x):
+        x_log_floor = x.log2().floor()
+        big = x_log_floor
+        extra_mask = (x - 2**big) >= 2**(big - 1)
+        big[extra_mask] = big[extra_mask] + 1
+        return big
+
+    @staticmethod
+    def int_softmax(x, scaling_factor, base):
+
+        def int_exp(x_int, scaling_factor, base):
+            return torch.pow(base, x_int), scaling_factor
+
+        x_int = x / scaling_factor
+        x_int_max, _ = x_int.max(dim=-1, keepdim=True)
+        x_int = x_int - x_int_max
+        exp_int = int_exp(x_int, scaling_factor, base)
+        exp_int_sum = exp_int.sum(dim=-1, keepdim=True)
+        return exp_int, exp_int_sum
+
+    def forward(self, x, scale):
+        if self.log_int_softmax and scale is not None:
+            exp_int, exp_int_sum = self.int_softmax(x, scale, self.base)
+            softmax_out = torch.round(exp_int_sum / exp_int)
+            rounds = self.log_round(softmax_out)
+            mask = rounds >= 2**self.bit_type.bits
+            qlog = torch.clamp(rounds, 0, 2**self.bit_type.bits - 1)
+            deq_softmax = 2**(-qlog)
+            deq_softmax[mask] = 0
+            return deq_softmax
+        else:
+            x = x.softmax(dim=-1)
+            if self.calibrate:
+                self.quantizer.observer.update(x)
+                if self.last_calibrate:
+                    self.quantizer.update_quantization_params(x)
+            if not self.quant:
+                return x
+            x = self.quantizer(x)
+            return x
 
 class QIntSoftmaxUniform(nn.Module):
     def __init__(self,
