@@ -7,6 +7,12 @@ from .bit_type import BIT_TYPE_DICT
 from .observer import build_observer
 from .quantizer import build_quantizer
 
+import copy
+
+
+def softmax_func(x, base, dim=-1):
+    max_val, _ = torch.max(x, dim, keepdims = True)
+    return torch.pow(base, x - max_val) / torch.pow(base, x - max_val).sum(dim, keepdim = True)
 
 class QConv2d(nn.Conv2d):
     def __init__(self,
@@ -295,7 +301,8 @@ class QIntSoftmax(nn.Module):
             x = self.quantizer(x)
             return x
 
-class QIntSoftmaxIntBase(nn.Module):
+
+class QIntSoftermax(nn.Module):
 
     def __init__(self,
                  log_int_softmax=False,
@@ -306,9 +313,20 @@ class QIntSoftmaxIntBase(nn.Module):
                  calibration_mode='layer_wise',
                  observer_str='minmax',
                  quantizer_str='uniform',
-                 softmax_base=2):
-        super(QIntSoftmaxIntBase, self).__init__()
-
+                 input_int_bit=6,
+                 input_frac_bit=2,
+                 local_max_int_bit=6,
+                 local_max_frac_bit=2,
+                 unnormed_int_bit=1,
+                 unnormed_frac_bit=15,
+                 pow_sum_int_bit=10,
+                 pow_sum_frac_bit=6,
+                 recip_int_bit=1,
+                 recip_frac_bit=7,
+                 output_int_bit=1,
+                 output_frac_bit=15,
+                 base=2):
+        super(QIntSoftermax, self).__init__()
         self.log_int_softmax = log_int_softmax
         self.quant = quant
         self.calibrate = calibrate
@@ -323,42 +341,60 @@ class QIntSoftmaxIntBase(nn.Module):
                                        self.bit_type, self.calibration_mode)
         self.quantizer = build_quantizer(self.quantizer_str, self.bit_type,
                                          self.observer, self.module_type)
-        self.base = softmax_base
-        print(f'base: {self.base}')
+        self.input_int_bit = input_int_bit
+        self.input_frac_bit = input_frac_bit        
+        self.local_max_int_bit = local_max_int_bit
+        self.local_max_frac_bit = local_max_frac_bit
+        self.unnormed_int_bit = unnormed_int_bit
+        self.unnormed_frac_bit = unnormed_frac_bit
+        self.pow_sum_int_bit = pow_sum_int_bit
+        self.pow_sum_frac_bit = pow_sum_frac_bit
+        self.recip_int_bit = recip_int_bit
+        self.recip_frac_bit = recip_frac_bit
+        self.output_int_bit = output_int_bit
+        self.output_frac_bit = output_frac_bit
+        self.base = base
+    
+    def history_max(self, x):
+        x = torch.round(x.clone())
+        x[..., 0] = torch.ceil(x[..., 0])
+        for i in range(1, x.shape[-1]):
+            x[..., i] = torch.ceil(torch.max(x[..., i], x[..., i - 1]))
+        return x
 
-    @staticmethod
-    def log_round(x):
-        x_log_floor = x.log2().floor()
-        big = x_log_floor
-        extra_mask = (x - 2**big) >= 2**(big - 1)
-        big[extra_mask] = big[extra_mask] + 1
-        return big
+    def convert(self, x, int_bit=6, frac_bit=2):
+        return torch.round(torch.clamp(x * 2 ** frac_bit, max=2 ** (int_bit + frac_bit))) / 2 ** frac_bit
 
-    @staticmethod
-    def int_softmax(x, scaling_factor, base):
-
-        def int_exp(x_int, scaling_factor, base):
-            return torch.pow(base, x_int), scaling_factor
-
-        x_int = x / scaling_factor
-        x_int_max, _ = x_int.max(dim=-1, keepdim=True)
-        x_int = x_int - x_int_max
-        exp_int = int_exp(x_int, scaling_factor, base)
-        exp_int_sum = exp_int.sum(dim=-1, keepdim=True)
-        return exp_int, exp_int_sum
+    def get_sum_and_power(self, x, m, base=2):
+        m_diff = torch.diff(m, dim=-1, prepend=torch.zeros_like(m[..., :1]))
+        x_m_diff = x - m
+        pow_x_m_diff = torch.pow(base, x_m_diff)
+        d = copy.deepcopy(pow_x_m_diff[..., 0])
+        for i in range(1, x.shape[-1]):
+            d *= torch.pow(2, -m_diff[..., i])
+            d += pow_x_m_diff[..., i]
+        return d, pow_x_m_diff
 
     def forward(self, x, scale):
         if self.log_int_softmax and scale is not None:
-            exp_int, exp_int_sum = self.int_softmax(x, scale, self.base)
-            softmax_out = torch.round(exp_int_sum / exp_int)
-            rounds = self.log_round(softmax_out)
-            mask = rounds >= 2**self.bit_type.bits
-            qlog = torch.clamp(rounds, 0, 2**self.bit_type.bits - 1)
-            deq_softmax = 2**(-qlog)
-            deq_softmax[mask] = 0
-            return deq_softmax
+            # Inp.
+            x = self.convert(x, self.input_int_bit, self.input_frac_bit)
+            m = self.history_max(torch.ceil(x))
+            m_v = m[..., -1]
+            m_v_i_diff = m_v.unsqueeze(-1) - m
+            d, pow_x_m_diff = self.get_sum_and_power(x, m, base = self.base)
+            # PowSum
+            d = self.convert(d, self.pow_sum_int_bit, self.pow_sum_frac_bit)
+            # Recip.
+            recip_d = self.convert(1 / d, self.recip_int_bit, self.recip_frac_bit)
+            # Unnormed
+            pow_x_m_diff = self.convert(pow_x_m_diff, self.unnormed_int_bit, self.unnormed_frac_bit)
+            out = pow_x_m_diff * torch.pow(self.base, -m_v_i_diff) * recip_d.unsqueeze(-1)
+            # Out.
+            out = self.convert(out, self.output_int_bit, self.output_frac_bit)
+            return out
         else:
-            x = x.softmax(dim=-1)
+            x = softmax_func(x, self.base)
             if self.calibrate:
                 self.quantizer.observer.update(x)
                 if self.last_calibrate:

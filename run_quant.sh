@@ -3,7 +3,6 @@ python  test_quant.py \
     /data/ImageNet \
     --quant --quant-method minmax \
     --ptf \
-    --lis \
     --use_checkpoint \
     --checkpoint_path /home/yujin/projects/PTQ4ViT/original/a_vit_tiny_patch16_224.pth
 
