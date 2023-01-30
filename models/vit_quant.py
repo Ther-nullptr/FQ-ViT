@@ -15,7 +15,7 @@ from torch import nn
 from torch.autograd import Variable
 
 from .layers_quant import DropPath, HybridEmbed, Mlp, PatchEmbed, trunc_normal_
-from .ptq import QAct, QConv2d, QIntLayerNorm, QIntSoftmax, QLinear, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift, QIntSoftermax
+from .ptq import QAct, QConv2d, QIntLayerNorm, QIntSoftmax, QLinear, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift, QIntSoftermax, QIntSoftermaxLinear
 from .utils import load_weights_from_npz
 
 import wandb

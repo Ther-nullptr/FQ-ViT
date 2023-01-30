@@ -404,6 +404,129 @@ class QIntSoftermax(nn.Module):
             x = self.quantizer(x)
             return x
 
+
+class QIntSoftermaxLinear(nn.Module):
+
+    def __init__(self,
+                 log_int_softmax=False,
+                 quant=False,
+                 calibrate=False,
+                 last_calibrate=False,
+                 bit_type=BIT_TYPE_DICT['int8'],
+                 calibration_mode='layer_wise',
+                 observer_str='minmax',
+                 quantizer_str='uniform',
+                 input_int_bit=6,
+                 input_frac_bit=2,
+                 local_max_int_bit=6,
+                 local_max_frac_bit=2,
+                 unnormed_int_bit=1,
+                 unnormed_frac_bit=15,
+                 pow_sum_int_bit=10,
+                 pow_sum_frac_bit=6,
+                 recip_int_bit=1,
+                 recip_frac_bit=15,
+                 output_int_bit=1,
+                 output_frac_bit=15,
+                 base=2,
+                 upbound_ratio=0.95,
+                 lowbound_ratio=0.05):
+        super(QIntSoftermax, self).__init__()
+        self.log_int_softmax = log_int_softmax
+        self.quant = quant
+        self.calibrate = calibrate
+        self.last_calibrate = last_calibrate
+        self.bit_type = bit_type
+        self.calibration_mode = calibration_mode
+        self.observer_str = observer_str
+        self.quantizer_str = quantizer_str
+
+        self.module_type = 'activation'
+        self.observer = build_observer(self.observer_str, self.module_type,
+                                       self.bit_type, self.calibration_mode)
+        self.quantizer = build_quantizer(self.quantizer_str, self.bit_type,
+                                         self.observer, self.module_type)
+        self.input_int_bit = input_int_bit
+        self.input_frac_bit = input_frac_bit        
+        self.local_max_int_bit = local_max_int_bit
+        self.local_max_frac_bit = local_max_frac_bit
+        self.unnormed_int_bit = unnormed_int_bit
+        self.unnormed_frac_bit = unnormed_frac_bit
+        self.pow_sum_int_bit = pow_sum_int_bit
+        self.pow_sum_frac_bit = pow_sum_frac_bit
+        self.recip_int_bit = recip_int_bit
+        self.recip_frac_bit = recip_frac_bit
+        self.output_int_bit = output_int_bit
+        self.output_frac_bit = output_frac_bit
+        self.base = base
+        self.count = 0
+        self.upbound_ratio = upbound_ratio
+        self.lowbound_ratio = lowbound_ratio
+        self.upbound_val = 0
+        self.lowbound_val = 0
+        self.k = 1
+        self.b = 1
+    
+    def forward_quant(self, I, S):
+        return self.forward(I * S)
+
+    # @profile
+    def convert(self, x, int_bit=6, frac_bit=2):
+        return torch.round(torch.clamp(x * 2 ** frac_bit, max=2 ** (int_bit + frac_bit))) / 2 ** frac_bit
+
+    # @profile
+    def get_sum_and_power(self, x, base=2, dim=-1):
+        d = self.mix_func.forward(x, base).sum(dim, keepdim = True)
+        pow_linear_x = self.mix_func.forward(x, base)
+        return d, pow_linear_x
+    
+    def forward_split(self, x, base):
+        range_2 = (x >= self.lowbound_val) & (x <= self.upbound_val)
+        range_3 = x > self.upbound_val
+        y_2 = torch.pow(base, x) 
+        y_3 = self.k * x + self.b
+        y = (y_2 * range_2 + y_3 * range_3)
+        return y 
+
+    def forward(self, x, scale):
+        if self.log_int_softmax and scale is not None:
+            # Inp.
+            x = self.convert(x, self.input_int_bit, self.input_frac_bit)
+            d, pow_linear_x = self.get_sum_and_power(x, base = self.base)
+            # PowSum
+            d = self.convert(d, self.pow_sum_int_bit, self.pow_sum_frac_bit)
+            # Recip.
+            recip_d = self.convert(1 / d, self.recip_int_bit, self.recip_frac_bit)
+            # Unnormed
+            pow_linear_x = self.convert(pow_linear_x, self.unnormed_int_bit, self.unnormed_frac_bit)
+            out = pow_linear_x * recip_d
+            # Out.
+            out = self.convert(out, self.output_int_bit, self.output_frac_bit)
+            return out
+        else:
+            if self.calibrate:
+                x_ = torch.sort(x.flatten(), dim=-1, descending=False)[0]
+                self.val_upbound += x_[int(x_.shape[0] * self.upbound_ratio)]
+                self.val_lowbound += x_[int(x_.shape[0] * self.lowbound_ratio)]
+                self.count += 1
+                if self.last_calibrate:
+                    self.upbound_val /= self.count
+                    self.lowbound_val /= self.count
+                    print(f'upbound_val: {self.upbound_val}, lowbound_val: {self.lowbound_val}')
+                    self.k = self.base ** self.upbound_val * torch.log(self.base)
+                    self.b = self.base ** self.upbound_val * (1 - torch.log(self.base) * self.upbound_val)
+
+            x = softmax_func(x, self.base)
+            if self.calibrate:
+                self.quantizer.observer.update(x)
+                if self.last_calibrate:
+                    self.quantizer.update_quantization_params(x)
+            if not self.quant:
+                return x
+            x = self.quantizer(x)
+            return x
+
+
 class QIntSoftmaxUniform(nn.Module):
     def __init__(self,
                  log_int_softmax=False,
