@@ -402,7 +402,7 @@ class VisionTransformer(nn.Module):
 
     def model_quant(self):
         for m in self.modules():
-            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift]:
+            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift, QIntSoftermax, QIntSoftermaxLinear]:
                 m.quant = True
             if self.cfg.INT_NORM:
                 if type(m) in [QIntLayerNorm]:
@@ -410,22 +410,22 @@ class VisionTransformer(nn.Module):
 
     def model_dequant(self):
         for m in self.modules():
-            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift]:
+            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift, QIntSoftermax, QIntSoftermaxLinear]:
                 m.quant = False
 
     def model_open_calibrate(self):
         for m in self.modules():
-            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift]:
+            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift, QIntSoftermax, QIntSoftermaxLinear]:
                 m.calibrate = True
 
     def model_open_last_calibrate(self):
         for m in self.modules():
-            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift]:
+            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift, QIntSoftermax, QIntSoftermaxLinear]:
                 m.last_calibrate = True
 
     def model_close_calibrate(self):
         for m in self.modules():
-            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift]:
+            if type(m) in [QConv2d, QLinear, QAct, QIntSoftmax, QIntSoftmaxUniform, QIntGELU, QIntSoftmaxShift, QIntGELUShift, QIntSoftermax, QIntSoftermaxLinear]:
                 m.calibrate = False
 
     # def forward_features(self, x):
@@ -515,9 +515,9 @@ class VisionTransformer(nn.Module):
             # case 1
             reached_token = c_token > 1 - self.eps #! {line 17} #! [10, 197]
             if self.step % 10 == 0:
-                print(f'avg_val_{i}', torch.mean(c_token).item())
+                # print(f'avg_val_{i}', torch.mean(c_token).item())
                 wandb.log({f'avg_val_{i}': torch.mean(c_token).item()})
-                print(f"reached_token_ratio_{i}", torch.mean(reached_token.float()).item())
+                # print(f"reached_token_ratio_{i}", torch.mean(reached_token.float()).item())
                 wandb.log({f"reached_token_ratio_{i}": torch.mean(reached_token.float()).item()})
             reached_token = reached_token.float() * mask_token.float() #! 抽取出本轮达到目标值的token，同时还要忽略掉之前被mask掉的token
             delta1 = block_output * R_token.view(bs, self.total_token_cnt, 1) * reached_token.view(bs, self.total_token_cnt, 1) #! {line 26}

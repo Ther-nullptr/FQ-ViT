@@ -7,7 +7,7 @@ from .bit_type import BIT_TYPE_DICT
 from .observer import build_observer
 from .quantizer import build_quantizer
 
-import copy
+import numpy as np
 
 
 def softmax_func(x, base, dim=-1):
@@ -369,7 +369,7 @@ class QIntSoftermax(nn.Module):
         m_diff = torch.diff(m, dim=-1, prepend=torch.zeros_like(m[..., :1]))
         x_m_diff = x - m
         pow_x_m_diff = torch.pow(base, x_m_diff)
-        d = copy.deepcopy(pow_x_m_diff[..., 0])
+        d = pow_x_m_diff[..., 0].clone()
         for i in range(1, x.shape[-1]):
             d *= torch.pow(2, -m_diff[..., i])
             d += pow_x_m_diff[..., i]
@@ -406,7 +406,6 @@ class QIntSoftermax(nn.Module):
 
 
 class QIntSoftermaxLinear(nn.Module):
-
     def __init__(self,
                  log_int_softmax=False,
                  quant=False,
@@ -420,18 +419,17 @@ class QIntSoftermaxLinear(nn.Module):
                  input_frac_bit=2,
                  local_max_int_bit=6,
                  local_max_frac_bit=2,
-                 unnormed_int_bit=1,
-                 unnormed_frac_bit=15,
-                 pow_sum_int_bit=10,
-                 pow_sum_frac_bit=6,
+                 unnormed_int_bit=10,
+                 unnormed_frac_bit=6,
+                 pow_sum_int_bit=16,
+                 pow_sum_frac_bit=0,
                  recip_int_bit=1,
                  recip_frac_bit=15,
                  output_int_bit=1,
                  output_frac_bit=15,
                  base=2,
-                 upbound_ratio=0.95,
-                 lowbound_ratio=0.05):
-        super(QIntSoftermax, self).__init__()
+                 upbound_ratio=0.):
+        super(QIntSoftermaxLinear, self).__init__()
         self.log_int_softmax = log_int_softmax
         self.quant = quant
         self.calibrate = calibrate
@@ -461,9 +459,8 @@ class QIntSoftermaxLinear(nn.Module):
         self.base = base
         self.count = 0
         self.upbound_ratio = upbound_ratio
-        self.lowbound_ratio = lowbound_ratio
-        self.upbound_val = 0
-        self.lowbound_val = 0
+        self.upbound_val = 8.
+        self.lowbound_val = -10000.
         self.k = 1
         self.b = 1
     
@@ -476,12 +473,12 @@ class QIntSoftermaxLinear(nn.Module):
 
     # @profile
     def get_sum_and_power(self, x, base=2, dim=-1):
-        d = self.mix_func.forward(x, base).sum(dim, keepdim = True)
-        pow_linear_x = self.mix_func.forward(x, base)
+        d = self.forward_split(x, base).sum(dim, keepdim = True)
+        pow_linear_x = self.forward_split(x, base)
         return d, pow_linear_x
     
     def forward_split(self, x, base):
-        range_2 = (x >= self.lowbound_val) & (x <= self.upbound_val)
+        range_2 = x <= self.upbound_val
         range_3 = x > self.upbound_val
         y_2 = torch.pow(base, x) 
         y_3 = self.k * x + self.b
@@ -491,6 +488,9 @@ class QIntSoftermaxLinear(nn.Module):
     def forward(self, x, scale):
         if self.log_int_softmax and scale is not None:
             # Inp.
+            # self.upbound_val /= self.count
+            self.k = self.base ** self.upbound_val * np.log(self.base)
+            self.b = self.base ** self.upbound_val * (1 - np.log(self.base) * self.upbound_val)
             x = self.convert(x, self.input_int_bit, self.input_frac_bit)
             d, pow_linear_x = self.get_sum_and_power(x, base = self.base)
             # PowSum
@@ -506,15 +506,7 @@ class QIntSoftermaxLinear(nn.Module):
         else:
             if self.calibrate:
                 x_ = torch.sort(x.flatten(), dim=-1, descending=False)[0]
-                self.val_upbound += x_[int(x_.shape[0] * self.upbound_ratio)]
-                self.val_lowbound += x_[int(x_.shape[0] * self.lowbound_ratio)]
-                self.count += 1
-                if self.last_calibrate:
-                    self.upbound_val /= self.count
-                    self.lowbound_val /= self.count
-                    print(f'upbound_val: {self.upbound_val}, lowbound_val: {self.lowbound_val}')
-                    self.k = self.base ** self.upbound_val * torch.log(self.base)
-                    self.b = self.base ** self.upbound_val * (1 - torch.log(self.base) * self.upbound_val)
+                print(f'min val:{x_[0]}, max val:{x_[-1]}')
 
             x = softmax_func(x, self.base)
             if self.calibrate:
